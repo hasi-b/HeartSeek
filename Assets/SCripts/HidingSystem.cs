@@ -22,20 +22,25 @@ public class HidingSystem : MonoBehaviour
     public float minSpotSeparation = 1.0f;
 
     [Header("Flow Timing")]
-    public float introDuration = 3f;           // how long "We will hide now!" shows
-    public float fadeDuration = 1f;             // fade to/from black
-    public float countdownStepDuration = 1f;    // seconds per number
-    public float revealMessageDuration = 2f;    // "Find us!" duration
+    public float introDuration = 3f;
+    public float fadeDuration = 1f;
+    public float countdownStepDuration = 1f;
+    public float revealMessageDuration = 2f;
 
     [Header("Intro Spawn")]
-    public float introDistance = 1.5f;          // meters in front of player
-    public float introSpacing = 0.5f;           // space between characters
-    public float introHeightOffset = -0.2f;     // relative to head height
+    public float introDistance = 1.5f;
+    public float introSpacing = 0.5f;
 
     [Header("UI")]
     public Color blackColor = Color.black;
-    public float worldTextHeight = 0.4f;        // above character
+    public float worldTextHeight = 0.4f;
     public float worldTextScale = 0.003f;
+
+    [Header("Haptics")]
+    public bool hapticsEnabled = true;
+    public float hapticMaxDistance = 2.5f;
+    public float hapticContinuousDistance = 0.3f;
+    public float sideThreshold = 0.25f;
 
     [Header("Debug")]
     public bool visualizeSpots = true;
@@ -53,6 +58,12 @@ public class HidingSystem : MonoBehaviour
     private Image fadeImage;
     private TextMeshProUGUI centerText;
     private List<GameObject> worldTexts = new();
+
+    // Haptics
+    private float leftPulseTimer = 0f;
+    private float rightPulseTimer = 0f;
+    private bool leftPulseOn = false;
+    private bool rightPulseOn = false;
 
     void Start()
     {
@@ -84,58 +95,57 @@ public class HidingSystem : MonoBehaviour
     // ═══════════════════════════
 
     void BuildUI()
-{
-    // world-space canvas attached to player head (works reliably in VR)
-    var canvasGO = new GameObject("FadeCanvas");
+    {
+        var canvasGO = new GameObject("FadeCanvas");
 
-    fadeCanvas = canvasGO.AddComponent<Canvas>();
-    fadeCanvas.renderMode = RenderMode.WorldSpace;
-    fadeCanvas.sortingOrder = 9999;
+        fadeCanvas = canvasGO.AddComponent<Canvas>();
+        fadeCanvas.renderMode = RenderMode.WorldSpace;
+        fadeCanvas.sortingOrder = 9999;
 
-    var canvasRT = canvasGO.GetComponent<RectTransform>();
-    canvasRT.sizeDelta = new Vector2(2000, 1200);
-    canvasRT.pivot = new Vector2(0.5f, 0.5f);
-    canvasRT.anchoredPosition = Vector2.zero;
+        var canvasRT = canvasGO.GetComponent<RectTransform>();
+        canvasRT.sizeDelta = new Vector2(2000, 1200);
+        canvasRT.pivot = new Vector2(0.5f, 0.5f);
+        canvasRT.anchoredPosition = Vector2.zero;
 
-    // black fade image — fills the whole canvas
-    var imgGO = new GameObject("FadeImage");
-    imgGO.transform.SetParent(canvasGO.transform, false);
-    fadeImage = imgGO.AddComponent<Image>();
-    fadeImage.color = new Color(0, 0, 0, 0);
-    fadeImage.raycastTarget = false;
+        // black fade image — fills the whole canvas
+        var imgGO = new GameObject("FadeImage");
+        imgGO.transform.SetParent(canvasGO.transform, false);
+        fadeImage = imgGO.AddComponent<Image>();
+        fadeImage.color = new Color(0, 0, 0, 0);
+        fadeImage.raycastTarget = false;
 
-    var imgRT = fadeImage.rectTransform;
-    imgRT.anchorMin = Vector2.zero;
-    imgRT.anchorMax = Vector2.one;
-    imgRT.pivot = new Vector2(0.5f, 0.5f);
-    imgRT.anchoredPosition = Vector2.zero;
-    imgRT.offsetMin = new Vector2(-2000, -2000);
-    imgRT.offsetMax = new Vector2(2000, 2000);
+        var imgRT = fadeImage.rectTransform;
+        imgRT.anchorMin = Vector2.zero;
+        imgRT.anchorMax = Vector2.one;
+        imgRT.pivot = new Vector2(0.5f, 0.5f);
+        imgRT.anchoredPosition = Vector2.zero;
+        imgRT.offsetMin = new Vector2(-2000, -2000);
+        imgRT.offsetMax = new Vector2(2000, 2000);
 
-    // center text — sits dead center
-    var txtGO = new GameObject("CenterText");
-    txtGO.transform.SetParent(canvasGO.transform, false);
+        // center text — sits dead center
+        var txtGO = new GameObject("CenterText");
+        txtGO.transform.SetParent(canvasGO.transform, false);
 
-    centerText = txtGO.AddComponent<TextMeshProUGUI>();
-    centerText.alignment = TextAlignmentOptions.Center;
-    centerText.horizontalAlignment = HorizontalAlignmentOptions.Center;
-    centerText.verticalAlignment = VerticalAlignmentOptions.Middle;
-    centerText.fontSize = 200;
-    centerText.color = Color.white;
-    centerText.text = "";
-    centerText.fontStyle = FontStyles.Bold;
-    centerText.raycastTarget = false;
+        centerText = txtGO.AddComponent<TextMeshProUGUI>();
+        centerText.alignment = TextAlignmentOptions.Center;
+        centerText.horizontalAlignment = HorizontalAlignmentOptions.Center;
+        centerText.verticalAlignment = VerticalAlignmentOptions.Middle;
+        centerText.fontSize = 200;
+        centerText.color = Color.white;
+        centerText.text = "";
+        centerText.fontStyle = FontStyles.Bold;
+        centerText.raycastTarget = false;
 
-    var txtRT = centerText.rectTransform;
-    txtRT.anchorMin = new Vector2(0.5f, 0.5f);
-    txtRT.anchorMax = new Vector2(0.5f, 0.5f);
-    txtRT.pivot = new Vector2(0.5f, 0.5f);
-    txtRT.sizeDelta = new Vector2(2000, 600);
-    txtRT.anchoredPosition = Vector2.zero;
-    txtRT.localPosition = new Vector3(0, 0, -0.01f); // slightly in front of fade image
-    txtRT.localScale = Vector3.one;
-}
-    
+        var txtRT = centerText.rectTransform;
+        txtRT.anchorMin = new Vector2(0.5f, 0.5f);
+        txtRT.anchorMax = new Vector2(0.5f, 0.5f);
+        txtRT.pivot = new Vector2(0.5f, 0.5f);
+        txtRT.sizeDelta = new Vector2(2000, 600);
+        txtRT.anchoredPosition = Vector2.zero;
+        txtRT.localPosition = new Vector3(0, 0, -0.01f);
+        txtRT.localScale = Vector3.one;
+    }
+
     void AttachCanvasToPlayer()
     {
         if (fadeCanvas == null) return;
@@ -144,7 +154,6 @@ public class HidingSystem : MonoBehaviour
         if (anchor == null) return;
 
         fadeCanvas.transform.SetParent(anchor, false);
-        // dead center in front of the player
         fadeCanvas.transform.localPosition = new Vector3(0f, 0f, 1.5f);
         fadeCanvas.transform.localRotation = Quaternion.identity;
         fadeCanvas.transform.localScale = Vector3.one * 0.002f;
@@ -174,7 +183,6 @@ public class HidingSystem : MonoBehaviour
         rt.sizeDelta = new Vector2(800, 200);
         rt.anchoredPosition = Vector2.zero;
 
-        // outline for readability
         tmp.outlineColor = Color.black;
         tmp.outlineWidth = 0.3f;
 
@@ -198,10 +206,9 @@ public class HidingSystem : MonoBehaviour
         // 3. fade to black
         yield return StartCoroutine(FadeToBlack());
 
-        // 4. NOW hide renderers (screen is fully black, safe to swap positions)
+        // 4. hide renderers (screen is fully black, safe to swap positions)
         SetCharactersVisible(false);
 
-        // passthrough off while hidden
         if (passthroughLayer != null)
             passthroughLayer.hidden = true;
 
@@ -211,10 +218,9 @@ public class HidingSystem : MonoBehaviour
         // 6. actually place them in hiding spots (while invisible + black screen)
         HideAll();
 
-        // 7. re-enable renderers (still black screen, so player doesn't see the swap)
+        // 7. re-enable renderers (still black screen, player doesn't see the swap)
         SetCharactersVisible(true);
 
-        // passthrough back on
         if (passthroughLayer != null)
             passthroughLayer.hidden = false;
 
@@ -226,6 +232,7 @@ public class HidingSystem : MonoBehaviour
 
         Debug.Log("Hunt begins — " + hiddenChars.Count + " hidden");
     }
+
     // ═══════════════════════════
     // FLOW STEPS
     // ═══════════════════════════
@@ -239,7 +246,6 @@ public class HidingSystem : MonoBehaviour
 
         Vector3 right = Vector3.Cross(Vector3.up, forward);
 
-        // arrange in a row in front of the player
         int n = characters.Count;
         float totalWidth = (n - 1) * introSpacing;
 
@@ -253,11 +259,10 @@ public class HidingSystem : MonoBehaviour
             Vector3 pos = playerPos
                 + forward * introDistance
                 + right * offset;
-            pos.y = playerPos.y + introHeightOffset;
+            pos.y = playerPos.y;
 
             c.transform.position = pos;
 
-            // face the player
             Vector3 toPlayer = playerPos - pos;
             toPlayer.y = 0f;
             if (toPlayer.magnitude > 0.01f)
@@ -267,18 +272,15 @@ public class HidingSystem : MonoBehaviour
 
     IEnumerator ShowIntroMessage()
     {
-        // clean up any old ones
         foreach (var old in worldTexts) if (old != null) Destroy(old);
         worldTexts.Clear();
 
-        // spawn "We will hide now!" above each character
         foreach (var c in characters)
         {
             if (c == null) continue;
             worldTexts.Add(CreateWorldText(c.transform, "We will hide now!"));
         }
 
-        // keep text facing the player during the intro
         float elapsed = 0f;
         while (elapsed < introDuration)
         {
@@ -287,7 +289,6 @@ public class HidingSystem : MonoBehaviour
             yield return null;
         }
 
-        // remove them before fading
         foreach (var wt in worldTexts) if (wt != null) Destroy(wt);
         worldTexts.Clear();
     }
@@ -352,8 +353,19 @@ public class HidingSystem : MonoBehaviour
         centerText.text = "";
     }
 
+    void SetCharactersVisible(bool visible)
+    {
+        foreach (var c in characters)
+        {
+            if (c == null) continue;
+            var renderers = c.GetComponentsInChildren<Renderer>(true);
+            foreach (var r in renderers)
+                r.enabled = visible;
+        }
+    }
+
     // ═══════════════════════════
-    // HIDE LOGIC (unchanged from last version)
+    // HIDE LOGIC
     // ═══════════════════════════
 
     void HideAll()
@@ -699,7 +711,11 @@ public class HidingSystem : MonoBehaviour
 
     void Update()
     {
+        if (hapticsEnabled)
+            UpdateHaptics();
+
         if (hiddenChars.Count == 0) return;
+
         if (OVRInput.GetDown(OVRInput.Button.PrimaryIndexTrigger, OVRInput.Controller.RTouch))
             TryFind();
     }
@@ -767,20 +783,113 @@ public class HidingSystem : MonoBehaviour
     }
 
     // ═══════════════════════════
+    // HAPTICS
+    // ═══════════════════════════
+
+    void UpdateHaptics()
+    {
+        if (hiddenChars.Count == 0)
+        {
+            StopHaptics(OVRInput.Controller.LTouch);
+            StopHaptics(OVRInput.Controller.RTouch);
+            return;
+        }
+
+        Vector3 playerPos = GetPlayerHead();
+        Vector3 forward = GetPlayerForward();
+        forward.y = 0f;
+        forward.Normalize();
+
+        Vector3 right = Vector3.Cross(Vector3.up, forward).normalized;
+
+        float leftClosest = float.MaxValue;
+        float rightClosest = float.MaxValue;
+
+        foreach (var c in hiddenChars)
+        {
+            if (c == null) continue;
+
+            Vector3 toChar = c.transform.position - playerPos;
+            toChar.y = 0f;
+
+            float dist = toChar.magnitude;
+            if (dist > hapticMaxDistance) continue;
+
+            float sideDot = Vector3.Dot(toChar.normalized, right);
+
+            if (sideDot > sideThreshold)
+            {
+                if (dist < rightClosest) rightClosest = dist;
+            }
+            else if (sideDot < -sideThreshold)
+            {
+                if (dist < leftClosest) leftClosest = dist;
+            }
+            else
+            {
+                // directly in front or behind → buzz both
+                if (dist < leftClosest) leftClosest = dist;
+                if (dist < rightClosest) rightClosest = dist;
+            }
+        }
+
+        ApplyHaptics(OVRInput.Controller.LTouch, leftClosest, ref leftPulseTimer, ref leftPulseOn);
+        ApplyHaptics(OVRInput.Controller.RTouch, rightClosest, ref rightPulseTimer, ref rightPulseOn);
+    }
+
+    void ApplyHaptics(OVRInput.Controller controller, float distance,
+                      ref float pulseTimer, ref bool pulseOn)
+    {
+        if (distance > hapticMaxDistance)
+        {
+            StopHaptics(controller);
+            pulseTimer = 0f;
+            pulseOn = false;
+            return;
+        }
+
+        if (distance < hapticContinuousDistance)
+        {
+            OVRInput.SetControllerVibration(1f, 0.9f, controller);
+            pulseTimer = 0f;
+            pulseOn = true;
+            return;
+        }
+
+        // pulse mode: closer = faster & stronger
+        float t = Mathf.InverseLerp(hapticMaxDistance, hapticContinuousDistance, distance);
+        float pulseInterval = Mathf.Lerp(0.7f, 0.1f, t);
+        float amplitude = Mathf.Lerp(0.2f, 0.85f, t);
+        float frequency = Mathf.Lerp(0.4f, 1f, t);
+
+        pulseTimer += Time.deltaTime;
+        if (pulseTimer >= pulseInterval)
+        {
+            pulseTimer = 0f;
+            pulseOn = !pulseOn;
+        }
+
+        if (pulseOn)
+            OVRInput.SetControllerVibration(frequency, amplitude, controller);
+        else
+            OVRInput.SetControllerVibration(0f, 0f, controller);
+    }
+
+    void StopHaptics(OVRInput.Controller controller)
+    {
+        OVRInput.SetControllerVibration(0f, 0f, controller);
+    }
+
+    void OnDisable()
+    {
+        StopHaptics(OVRInput.Controller.LTouch);
+        StopHaptics(OVRInput.Controller.RTouch);
+    }
+
+    // ═══════════════════════════
     // HELPERS
     // ═══════════════════════════
 
-    
-    void SetCharactersVisible(bool visible)
-    {
-        foreach (var c in characters)
-        {
-            if (c == null) continue;
-            var renderers = c.GetComponentsInChildren<Renderer>(true);
-            foreach (var r in renderers)
-                r.enabled = visible;
-        }
-    }
     Vector3 GetPlayerHead()
     {
         if (playerHead != null) return playerHead.position;
