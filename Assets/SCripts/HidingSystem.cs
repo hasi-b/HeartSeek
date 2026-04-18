@@ -14,12 +14,21 @@ public class HidingSystem : MonoBehaviour
     public OVRPassthroughLayer passthroughLayer;
     public Transform playerHead;
     public Transform rightController;
+    public Transform leftController;
+
+    [Header("Place Zone")]
+    public Transform placeZone;
+    public float placeRadius = 0.4f;
+
+    [Header("Effects")]
+    public GameObject confettiPrefab;
 
     [Header("Settings")]
     public float hideDelay = 5f;
     public float minClearance = 0.3f;
     public float minPlayerDist = 1.5f;
     public float minSpotSeparation = 1.0f;
+    public float grabDistance = 0.5f;
 
     [Header("Flow Timing")]
     public float introDuration = 3f;
@@ -50,8 +59,13 @@ public class HidingSystem : MonoBehaviour
     private float floorY;
 
     private List<GameObject> hiddenChars = new();
+    private List<GameObject> foundChars = new();
+    private List<GameObject> placedChars = new();
     private List<Vector3> debugUsedSpots = new();
-    private int foundCount = 0;
+
+    // grab state
+    private GameObject grabbedChar = null;
+    private bool isGrabbing = false;
 
     // UI
     private Canvas fadeCanvas;
@@ -65,9 +79,22 @@ public class HidingSystem : MonoBehaviour
     private bool leftPulseOn = false;
     private bool rightPulseOn = false;
 
+    // Sonar visuals
+    private GameObject leftSonar;
+    private GameObject rightSonar;
+    private ParticleSystem leftSonarPS;
+    private ParticleSystem rightSonarPS;
+    private float leftHapticIntensity = 0f;
+    private float rightHapticIntensity = 0f;
+
+    // Place zone visual
+    private GameObject placeZoneVisual;
+
     void Start()
     {
         BuildUI();
+        CreateSonarEffects();
+        CreatePlaceZoneVisual();
         MRUK.Instance.RegisterSceneLoadedCallback(OnRoomLoaded);
     }
 
@@ -107,7 +134,6 @@ public class HidingSystem : MonoBehaviour
         canvasRT.pivot = new Vector2(0.5f, 0.5f);
         canvasRT.anchoredPosition = Vector2.zero;
 
-        // black fade image — fills the whole canvas
         var imgGO = new GameObject("FadeImage");
         imgGO.transform.SetParent(canvasGO.transform, false);
         fadeImage = imgGO.AddComponent<Image>();
@@ -122,7 +148,6 @@ public class HidingSystem : MonoBehaviour
         imgRT.offsetMin = new Vector2(-2000, -2000);
         imgRT.offsetMax = new Vector2(2000, 2000);
 
-        // center text — sits dead center
         var txtGO = new GameObject("CenterText");
         txtGO.transform.SetParent(canvasGO.transform, false);
 
@@ -190,6 +215,148 @@ public class HidingSystem : MonoBehaviour
     }
 
     // ═══════════════════════════
+    // SONAR VISUALS
+    // ═══════════════════════════
+
+    void CreateSonarEffects()
+    {
+        leftSonar = CreateSonarParticle("LeftSonar");
+        rightSonar = CreateSonarParticle("RightSonar");
+
+        leftSonarPS = leftSonar.GetComponent<ParticleSystem>();
+        rightSonarPS = rightSonar.GetComponent<ParticleSystem>();
+    }
+
+    GameObject CreateSonarParticle(string name)
+    {
+        var go = new GameObject(name);
+        var ps = go.AddComponent<ParticleSystem>();
+
+        var main = ps.main;
+        main.loop = true;
+        main.startLifetime = 0.8f;
+        main.startSpeed = 0f;
+        main.startSize = 0.05f;
+        main.maxParticles = 20;
+        main.simulationSpace = ParticleSystemSimulationSpace.World;
+        main.startColor = new Color(0.3f, 0.7f, 1f, 0.6f);
+        main.playOnAwake = false;
+
+        var emission = ps.emission;
+        emission.rateOverTime = 0f;
+        emission.SetBursts(new ParticleSystem.Burst[] {
+            new ParticleSystem.Burst(0f, 8)
+        });
+
+        var shape = ps.shape;
+        shape.shapeType = ParticleSystemShapeType.Sphere;
+        shape.radius = 0.01f;
+
+        var sizeOverLifetime = ps.sizeOverLifetime;
+        sizeOverLifetime.enabled = true;
+        sizeOverLifetime.size = new ParticleSystem.MinMaxCurve(1f,
+            new AnimationCurve(
+                new Keyframe(0f, 0.2f),
+                new Keyframe(0.5f, 1f),
+                new Keyframe(1f, 1.5f)
+            ));
+
+        var colorOverLifetime = ps.colorOverLifetime;
+        colorOverLifetime.enabled = true;
+        Gradient grad = new Gradient();
+        grad.SetKeys(
+            new GradientColorKey[] {
+                new GradientColorKey(new Color(0.3f, 0.7f, 1f), 0f),
+                new GradientColorKey(new Color(0.5f, 0.9f, 1f), 0.5f),
+                new GradientColorKey(new Color(0.3f, 0.7f, 1f), 1f)
+            },
+            new GradientAlphaKey[] {
+                new GradientAlphaKey(0.8f, 0f),
+                new GradientAlphaKey(0.4f, 0.5f),
+                new GradientAlphaKey(0f, 1f)
+            }
+        );
+        colorOverLifetime.color = grad;
+
+        var renderer = go.GetComponent<ParticleSystemRenderer>();
+        renderer.renderMode = ParticleSystemRenderMode.Billboard;
+        renderer.material = new Material(Shader.Find("Particles/Standard Unlit"));
+        renderer.material.SetFloat("_Mode", 1);
+        renderer.material.SetColor("_Color", new Color(0.3f, 0.7f, 1f, 0.6f));
+
+        return go;
+    }
+
+    void UpdateSonarVisuals()
+    {
+        if (leftController != null)
+            leftSonar.transform.position = leftController.position;
+        if (rightController != null)
+            rightSonar.transform.position = rightController.position;
+
+        UpdateSonarPulse(leftSonarPS, leftHapticIntensity, leftPulseOn);
+        UpdateSonarPulse(rightSonarPS, rightHapticIntensity, rightPulseOn);
+    }
+
+    void UpdateSonarPulse(ParticleSystem ps, float intensity, bool pulseOn)
+    {
+        if (intensity <= 0f)
+        {
+            if (ps.isPlaying) ps.Stop();
+            return;
+        }
+
+        var main = ps.main;
+
+        float alpha = Mathf.Lerp(0.2f, 0.8f, intensity);
+        main.startColor = new Color(0.3f, 0.7f, 1f, alpha);
+        main.startSize = Mathf.Lerp(0.03f, 0.1f, intensity);
+        main.startLifetime = Mathf.Lerp(0.3f, 0.8f, intensity);
+
+        if (pulseOn && !ps.isPlaying)
+        {
+            ps.Play();
+        }
+        else if (!pulseOn && intensity < 0.9f)
+        {
+            if (ps.isPlaying) ps.Stop();
+        }
+    }
+
+    void CreatePlaceZoneVisual()
+    {
+        if (placeZone == null) return;
+
+        placeZoneVisual = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+        placeZoneVisual.name = "PlaceZoneVisual";
+        placeZoneVisual.transform.SetParent(placeZone, false);
+        placeZoneVisual.transform.localPosition = Vector3.zero;
+        placeZoneVisual.transform.localScale = new Vector3(
+            placeRadius * 2f, 0.01f, placeRadius * 2f);
+
+        var col = placeZoneVisual.GetComponent<Collider>();
+        if (col != null) Destroy(col);
+
+        var mat = new Material(Shader.Find("Particles/Standard Unlit"));
+        mat.SetColor("_Color", new Color(0.3f, 1f, 0.3f, 0.3f));
+        placeZoneVisual.GetComponent<Renderer>().material = mat;
+
+        placeZoneVisual.SetActive(false);
+    }
+
+    // ═══════════════════════════
+    // CONFETTI
+    // ═══════════════════════════
+
+    void SpawnConfetti(Vector3 position)
+    {
+        if (confettiPrefab == null) return;
+
+        var go = Instantiate(confettiPrefab, position, Quaternion.identity);
+        Destroy(go, 5f);
+    }
+
+    // ═══════════════════════════
     // GAME FLOW
     // ═══════════════════════════
 
@@ -197,40 +364,47 @@ public class HidingSystem : MonoBehaviour
     {
         yield return new WaitForSeconds(hideDelay);
 
-        // 1. place characters in front of player, facing them
         SpawnCharactersInFront();
 
-        // 2. show "We will hide now!" above each character
         yield return StartCoroutine(ShowIntroMessage());
 
-        // 3. fade to black
         yield return StartCoroutine(FadeToBlack());
 
-        // 4. hide renderers (screen is fully black, safe to swap positions)
         SetCharactersVisible(false);
 
         if (passthroughLayer != null)
             passthroughLayer.hidden = true;
 
-        // 5. countdown on black screen
         yield return StartCoroutine(ShowCountdown());
 
-        // 6. actually place them in hiding spots (while invisible + black screen)
         HideAll();
 
-        // 7. re-enable renderers (still black screen, player doesn't see the swap)
         SetCharactersVisible(true);
 
         if (passthroughLayer != null)
             passthroughLayer.hidden = false;
 
-        // 8. fade back in — they'll be revealed hidden in the room
         yield return StartCoroutine(FadeFromBlack());
 
-        // 9. brief "Find us!" message
         yield return StartCoroutine(ShowCenterMessage("Find us!", revealMessageDuration));
 
         Debug.Log("Hunt begins — " + hiddenChars.Count + " hidden");
+    }
+
+    IEnumerator EndGameSequence()
+    {
+        yield return new WaitForSeconds(1f);
+
+        yield return StartCoroutine(FadeToBlack());
+
+        centerText.text = "You found them all!";
+        yield return new WaitForSeconds(3f);
+        centerText.text = "";
+
+        yield return StartCoroutine(FadeFromBlack());
+
+        if (placeZoneVisual != null)
+            placeZoneVisual.SetActive(false);
     }
 
     // ═══════════════════════════
@@ -318,14 +492,14 @@ public class HidingSystem : MonoBehaviour
 
     IEnumerator Fade(float from, float to, float duration)
     {
-        float t = 0f;
+        float elapsed = 0f;
         Color c = blackColor;
-        while (t < duration)
+        while (elapsed < duration)
         {
-            float a = Mathf.Lerp(from, to, t / duration);
+            float a = Mathf.Lerp(from, to, elapsed / duration);
             c.a = a;
             fadeImage.color = c;
-            t += Time.deltaTime;
+            elapsed += Time.deltaTime;
             yield return null;
         }
         c.a = to;
@@ -407,6 +581,8 @@ public class HidingSystem : MonoBehaviour
         allSpots.Sort((a, b) => b.score.CompareTo(a.score));
 
         hiddenChars.Clear();
+        foundChars.Clear();
+        placedChars.Clear();
         var used = new List<Vector3>();
 
         foreach (var c in characters)
@@ -706,7 +882,7 @@ public class HidingSystem : MonoBehaviour
     }
 
     // ═══════════════════════════
-    // DISCOVERY
+    // DISCOVERY + GRAB + PLACE
     // ═══════════════════════════
 
     void Update()
@@ -714,9 +890,15 @@ public class HidingSystem : MonoBehaviour
         if (hapticsEnabled)
             UpdateHaptics();
 
-        if (hiddenChars.Count == 0) return;
+        UpdateSonarVisuals();
+        UpdateGrab();
+        UpdatePlaceZoneVisual();
 
-        if (OVRInput.GetDown(OVRInput.Button.PrimaryIndexTrigger, OVRInput.Controller.RTouch))
+        if (hiddenChars.Count == 0 && foundChars.Count == 0 && grabbedChar == null)
+            return;
+
+        if (hiddenChars.Count > 0 &&
+            OVRInput.GetDown(OVRInput.Button.PrimaryIndexTrigger, OVRInput.Controller.RTouch))
             TryFind();
     }
 
@@ -772,14 +954,127 @@ public class HidingSystem : MonoBehaviour
     void OnFound(GameObject c)
     {
         hiddenChars.Remove(c);
-        foundCount++;
-        Debug.Log("FOUND: " + c.name + " (" + foundCount + " total)");
+        foundChars.Add(c);
 
-        if (hiddenChars.Count == 0)
+        SpawnConfetti(c.transform.position);
+
+        Debug.Log("FOUND: " + c.name);
+
+        if (placeZoneVisual != null && placeZone != null)
+            placeZoneVisual.SetActive(true);
+    }
+
+    // ═══════════════════════════
+    // GRAB SYSTEM
+    // ═══════════════════════════
+
+    void UpdateGrab()
+    {
+        if (rightController == null) return;
+
+        bool gripHeld = OVRInput.Get(OVRInput.Button.PrimaryHandTrigger, OVRInput.Controller.RTouch);
+        bool gripDown = OVRInput.GetDown(OVRInput.Button.PrimaryHandTrigger, OVRInput.Controller.RTouch);
+        bool gripUp = OVRInput.GetUp(OVRInput.Button.PrimaryHandTrigger, OVRInput.Controller.RTouch);
+
+        if (gripDown && grabbedChar == null)
         {
-            Debug.Log("ALL FOUND!");
-            StartCoroutine(ShowCenterMessage("You found us all!", 3f));
+            GameObject closest = null;
+            float closestDist = grabDistance;
+
+            foreach (var c in foundChars)
+            {
+                if (c == null) continue;
+                float dist = Vector3.Distance(rightController.position, c.transform.position);
+                if (dist < closestDist)
+                {
+                    closestDist = dist;
+                    closest = c;
+                }
+            }
+
+            if (closest != null)
+            {
+                grabbedChar = closest;
+                isGrabbing = true;
+                foundChars.Remove(closest);
+                Debug.Log("GRABBED: " + closest.name);
+            }
         }
+
+        if (isGrabbing && grabbedChar != null && gripHeld)
+        {
+            grabbedChar.transform.position = rightController.position +
+                rightController.forward * 0.2f;
+
+            Vector3 toPlayer = GetPlayerHead() - grabbedChar.transform.position;
+            toPlayer.y = 0f;
+            if (toPlayer.magnitude > 0.01f)
+                grabbedChar.transform.rotation = Quaternion.LookRotation(toPlayer);
+        }
+
+        if (gripUp && isGrabbing && grabbedChar != null)
+        {
+            if (placeZone != null &&
+                Vector3.Distance(grabbedChar.transform.position, placeZone.position) < placeRadius)
+            {
+                OnPlaced(grabbedChar);
+            }
+            else
+            {
+                foundChars.Add(grabbedChar);
+                Debug.Log("DROPPED: " + grabbedChar.name);
+            }
+
+            grabbedChar = null;
+            isGrabbing = false;
+        }
+    }
+
+    void OnPlaced(GameObject c)
+    {
+        c.transform.position = placeZone.position;
+
+        Vector3 toPlayer = GetPlayerHead() - c.transform.position;
+        toPlayer.y = 0f;
+        if (toPlayer.magnitude > 0.01f)
+            c.transform.rotation = Quaternion.LookRotation(toPlayer);
+
+        placedChars.Add(c);
+
+        SpawnConfetti(c.transform.position + Vector3.up * 0.3f);
+
+        Debug.Log("PLACED: " + c.name + " (" + placedChars.Count + "/" + characters.Count + ")");
+
+        if (placedChars.Count >= characters.Count)
+        {
+            StartCoroutine(EndGameSequence());
+        }
+    }
+
+    void UpdatePlaceZoneVisual()
+    {
+        if (placeZoneVisual == null || placeZone == null) return;
+
+        bool shouldShow = (foundChars.Count > 0 || grabbedChar != null) &&
+                          placedChars.Count < characters.Count;
+        placeZoneVisual.SetActive(shouldShow);
+
+        if (!shouldShow) return;
+
+        float pulse = 1f + Mathf.Sin(Time.time * 3f) * 0.15f;
+        placeZoneVisual.transform.localScale = new Vector3(
+            placeRadius * 2f * pulse, 0.01f, placeRadius * 2f * pulse);
+
+        bool charNear = false;
+        if (grabbedChar != null &&
+            Vector3.Distance(grabbedChar.transform.position, placeZone.position) < placeRadius * 2f)
+            charNear = true;
+
+        var mat = placeZoneVisual.GetComponent<Renderer>().material;
+        Color col = charNear
+            ? new Color(0.3f, 1f, 0.3f, 0.6f)
+            : new Color(0.3f, 1f, 0.3f, 0.25f);
+        mat.SetColor("_Color", col);
     }
 
     // ═══════════════════════════
@@ -792,6 +1087,8 @@ public class HidingSystem : MonoBehaviour
         {
             StopHaptics(OVRInput.Controller.LTouch);
             StopHaptics(OVRInput.Controller.RTouch);
+            leftHapticIntensity = 0f;
+            rightHapticIntensity = 0f;
             return;
         }
 
@@ -827,11 +1124,17 @@ public class HidingSystem : MonoBehaviour
             }
             else
             {
-                // directly in front or behind → buzz both
                 if (dist < leftClosest) leftClosest = dist;
                 if (dist < rightClosest) rightClosest = dist;
             }
         }
+
+        leftHapticIntensity = leftClosest < hapticMaxDistance
+            ? Mathf.InverseLerp(hapticMaxDistance, hapticContinuousDistance, leftClosest)
+            : 0f;
+        rightHapticIntensity = rightClosest < hapticMaxDistance
+            ? Mathf.InverseLerp(hapticMaxDistance, hapticContinuousDistance, rightClosest)
+            : 0f;
 
         ApplyHaptics(OVRInput.Controller.LTouch, leftClosest, ref leftPulseTimer, ref leftPulseOn);
         ApplyHaptics(OVRInput.Controller.RTouch, rightClosest, ref rightPulseTimer, ref rightPulseOn);
@@ -856,7 +1159,6 @@ public class HidingSystem : MonoBehaviour
             return;
         }
 
-        // pulse mode: closer = faster & stronger
         float t = Mathf.InverseLerp(hapticMaxDistance, hapticContinuousDistance, distance);
         float pulseInterval = Mathf.Lerp(0.7f, 0.1f, t);
         float amplitude = Mathf.Lerp(0.2f, 0.85f, t);
@@ -966,6 +1268,12 @@ public class HidingSystem : MonoBehaviour
         Vector3 head = GetPlayerHead();
         foreach (var c in hiddenChars)
             if (c != null) Gizmos.DrawLine(head, c.transform.position);
+
+        if (placeZone != null)
+        {
+            Gizmos.color = Color.cyan;
+            Gizmos.DrawWireSphere(placeZone.position, placeRadius);
+        }
     }
 }
 
